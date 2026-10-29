@@ -24,6 +24,10 @@ local Config = {
 	HitMethod = "Input",
 	-- random +/- offset sent with remote hits, 0 = dead-center every note
 	RemoteJitterSec = 0,
+	-- play receptor, combo and judgment animations on remote hits
+	RemoteFx = true,
+	-- your character plays the lane hit pose on remote hits
+	RemotePose = true,
 
 	-- Auto = touch on phone, keyboard on pc
 	InputMode = "Auto",
@@ -120,6 +124,7 @@ end
 -- remote path. mirrors what the game's own NoteInput sends on a hit:
 -- Remotes.Notes:FireServer({noteName, noteAttr "T"}, offsetSeconds, lane)
 local notesRemote
+local playHitFx -- defined further down, needs getPlayerIndex
 
 local function getNotesRemote()
 	if notesRemote and notesRemote.Parent then
@@ -143,6 +148,9 @@ local function fireRemoteHit(lane, note)
 	remote:FireServer({ note.Name, note:GetAttribute("T") }, offset, lane)
 	-- consume the note, otherwise the game's own miss check fires "NM" later
 	note:Destroy()
+	if (Config.RemoteFx or Config.RemotePose) and playHitFx then
+		playHitFx(lane, offset)
+	end
 	return true
 end
 
@@ -180,6 +188,116 @@ local function getKeySync()
 	ksCache = found or nil
 	ksTime = t
 	return found
+end
+
+-- hit animations for remote mode. the game keeps its receptor objects, combo
+-- and judgment code as locals inside its own NoteInput, so we dig them out of
+-- NoteInput's upvalues and call them the way NoteInput does on a hit.
+-- needs getgc + debug.getupvalues from the executor
+local fx
+local fxNextTry = 0
+local fxWarned = false
+
+local function findFx()
+	if fx then
+		return fx
+	end
+
+	local t = os.clock()
+	if t < fxNextTry then
+		return nil
+	end
+	-- gc scan is slow, never repeat it per note
+	fxNextTry = t + 3
+
+	local getups = (debug and debug.getupvalues) or getupvalues
+	if getgc and getups then
+		pcall(function()
+			for _, f in ipairs(getgc()) do
+				if type(f) == "function"
+					and not (isexecutorclosure and isexecutorclosure(f))
+					and debug.info(f, "n") == "NoteInput" then
+					local found = { fn = f, getups = getups }
+
+					for _, v in pairs(getups(f)) do
+						if type(v) == "table" then
+							local a = v[1]
+							if type(a) == "table" and type(a[1]) == "table" and a[1].Hit then
+								found.recs = v
+							end
+						end
+					end
+
+					local okEnv, env = pcall(getfenv, f)
+					found.combo = okEnv and env and env.Combo or nil
+
+					if found.recs then
+						fx = found
+						return
+					end
+				end
+			end
+		end)
+	end
+
+	if not fx and not fxWarned then
+		fxWarned = true
+		Rayfield:Notify({
+			Title = "No hit animations",
+			Content = "Executor can't reach the game's hit code. Remote hits still work.",
+			Duration = 6,
+		})
+	end
+	return fx
+end
+
+playHitFx = function(lane, offset)
+	local f = findFx()
+	if not f then
+		return
+	end
+
+	local side = getPlayerIndex()
+	local rec = Config.RemoteFx and f.recs[side] and f.recs[side][lane]
+
+	if rec then
+		pcall(function()
+			rec:Reset()
+			rec:Hit(math.abs(2000 * offset) <= 43.5)
+		end)
+
+		if f.combo then
+			pcall(f.combo, offset, side)
+		end
+	end
+
+	-- player pose. the game keeps one "Notes" animation track for your side in
+	-- NoteInput's upvalues, rebuilt every match, so read it fresh each hit.
+	-- lane picks the time position: lane 1 = 0s, lane 2 = 1s, and so on
+	if Config.RemotePose then
+		pcall(function()
+			for _, v in pairs(f.getups(f.fn)) do
+				if type(v) == "table" then
+					local cand = v[side]
+					if typeof(cand) == "Instance" and cand:IsA("AnimationTrack") then
+						cand:Stop(0)
+						cand:Play(0)
+						cand.TimePosition = lane - 1
+						return
+					end
+				end
+			end
+		end)
+	end
+
+	-- the game releases the receptor on key up, mimic it
+	if rec then
+		task.delay(Config.TapDuration + 0.03, function()
+			pcall(function()
+				rec:Release()
+			end)
+		end)
+	end
 end
 
 -- dy is the signed distance to the hit line, vel the signed scroll speed
@@ -385,6 +503,24 @@ MainTab:CreateSlider({
 	Flag = "RemoteJitterMs",
 	Callback = function(v)
 		Config.RemoteJitterSec = v / 1000
+	end,
+})
+
+MainTab:CreateToggle({
+	Name = "Remote hit animations",
+	CurrentValue = true,
+	Flag = "RemoteFx",
+	Callback = function(value)
+		Config.RemoteFx = value
+	end,
+})
+
+MainTab:CreateToggle({
+	Name = "Remote player pose",
+	CurrentValue = true,
+	Flag = "RemotePose",
+	Callback = function(value)
+		Config.RemotePose = value
 	end,
 })
 
