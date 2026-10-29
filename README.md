@@ -19,7 +19,7 @@ Made with love 💖
 Run in your executor:
 
 ```lua
-loadstring(game:HttpGet(""))()
+loadstring(game:HttpGet("https://raw.githubusercontent.com/xyzisgod/FNF-Remix-Auto-Play/refs/heads/main/main.lua"))()
 ```
 
 ## Usage
