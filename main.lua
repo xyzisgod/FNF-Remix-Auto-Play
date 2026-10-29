@@ -6,6 +6,7 @@ local VirtualInputManager = game:GetService("VirtualInputManager")
 local Players = game:GetService("Players")
 local UserInputService = game:GetService("UserInputService")
 local GuiService = game:GetService("GuiService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local Rayfield = loadstring(game:HttpGet("https://sirius.menu/rayfield"))()
 
@@ -18,6 +19,12 @@ local Config = {
 		[4] = Enum.KeyCode.D,
 	},
 
+	-- Input = synthetic key/touch, safest. Remote = fires the game's Notes remote
+	-- directly. Most accurate, but server sees perfect hits, easy to flag
+	HitMethod = "Input",
+	-- random +/- offset sent with remote hits, 0 = dead-center every note
+	RemoteJitterSec = 0,
+
 	-- Auto = touch on phone, keyboard on pc
 	InputMode = "Auto",
 	-- Touch = multi-finger, Mouse = single pointer fallback
@@ -25,6 +32,8 @@ local Config = {
 	-- shift tap point from receptor center if taps land wrong
 	TouchXOffset = 0,
 	TouchYOffset = 0,
+	-- menu overlay eats taps on phone, hide it while playing
+	HideUiWhilePlaying = true,
 
 	-- nudge these if hits drift early or late
 	HitOffsetPx = 0,
@@ -108,6 +117,35 @@ local function sendInput(lane, isDown, receptor)
 	end
 end
 
+-- remote path. mirrors what the game's own NoteInput sends on a hit:
+-- Remotes.Notes:FireServer({noteName, noteAttr "T"}, offsetSeconds, lane)
+local notesRemote
+
+local function getNotesRemote()
+	if notesRemote and notesRemote.Parent then
+		return notesRemote
+	end
+	local remotes = ReplicatedStorage:FindFirstChild("Remotes")
+	local r = remotes and remotes:FindFirstChild("Notes")
+	notesRemote = (r and r:IsA("RemoteEvent")) and r or nil
+	return notesRemote
+end
+
+local function fireRemoteHit(lane, note)
+	local remote = getNotesRemote()
+	if not remote then
+		return false
+	end
+
+	local j = Config.RemoteJitterSec
+	local offset = j > 0 and (math.random() * 2 - 1) * j or 0
+
+	remote:FireServer({ note.Name, note:GetAttribute("T") }, offset, lane)
+	-- consume the note, otherwise the game's own miss check fires "NM" later
+	note:Destroy()
+	return true
+end
+
 local function sign(n)
 	return n >= 0 and 1 or -1
 end
@@ -126,11 +164,22 @@ local function getPlayerIndex()
 	return ok and result or 1
 end
 
+local ksCache, ksTime = nil, 0
+
+-- cached half a second, lookups were running every frame
 local function getKeySync()
+	local t = os.clock()
+	if ksCache and ksCache.Parent and t - ksTime < 0.5 then
+		return ksCache
+	end
+
 	local gui = player:FindFirstChild("PlayerGui")
 	local main = gui and gui:FindFirstChild("Main")
 	local match = main and main:FindFirstChild("MatchFrame")
-	return match and match.Visible and match:FindFirstChild("KeySync" .. getPlayerIndex())
+	local found = match and match.Visible and match:FindFirstChild("KeySync" .. getPlayerIndex())
+	ksCache = found or nil
+	ksTime = t
+	return found
 end
 
 -- dy is the signed distance to the hit line, vel the signed scroll speed
@@ -299,6 +348,45 @@ MainTab:CreateKeybind({
 local function firstOption(opt)
 	return type(opt) == "table" and opt[1] or opt
 end
+
+MainTab:CreateDropdown({
+	Name = "Hit method",
+	Options = { "Input", "Remote" },
+	CurrentOption = { "Input" },
+	MultipleOptions = false,
+	Flag = "HitMethod",
+	Callback = function(opt)
+		releaseAll()
+		Config.HitMethod = firstOption(opt)
+		if Config.HitMethod == "Remote" then
+			if getNotesRemote() then
+				Rayfield:Notify({
+					Title = "Remote mode",
+					Content = "Most accurate. Server sees every hit, easy to detect.",
+					Duration = 5,
+				})
+			else
+				Rayfield:Notify({
+					Title = "Remote not found",
+					Content = "ReplicatedStorage.Remotes.Notes missing, using input.",
+					Duration = 5,
+				})
+			end
+		end
+	end,
+})
+
+MainTab:CreateSlider({
+	Name = "Remote jitter",
+	Range = { 0, 60 },
+	Increment = 1,
+	Suffix = "ms",
+	CurrentValue = 0,
+	Flag = "RemoteJitterMs",
+	Callback = function(v)
+		Config.RemoteJitterSec = v / 1000
+	end,
+})
 
 MainTab:CreateDropdown({
 	Name = "Input mode",
@@ -557,7 +645,11 @@ mainConn = RunService.Heartbeat:Connect(function(dt)
 			local speed = laneSpeed[lane] or velocity
 			if speed and speed ~= 0 and shouldHit(dy, speed, dt) then
 				processed[note] = true
-				pressNote(lane, note, notes, receptor, speed)
+				if Config.HitMethod == "Remote" and getNotesRemote() then
+					fireRemoteHit(lane, note)
+				else
+					pressNote(lane, note, notes, receptor, speed)
+				end
 			end
 		end
 	end
