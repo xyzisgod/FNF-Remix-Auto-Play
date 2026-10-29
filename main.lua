@@ -1,5 +1,5 @@
 -- Rhythm Battle autoplayer (Rayfield UI)
--- by xyzisgod
+-- by YOUR_HANDLE
 
 local RunService = game:GetService("RunService")
 local VirtualInputManager = game:GetService("VirtualInputManager")
@@ -33,7 +33,7 @@ local Config = {
 	-- remote mode sends no real input, so input-based AFK checks may fire.
 	-- poke fake activity every few seconds while autoplay runs in remote mode
 	AntiAfk = true,
-	AfkActivity = "Mouse move", -- Mouse move / Key tap / Both
+	AfkActivity = "Auto", -- Auto (touch on phone, mouse on pc) / Mouse move / Key tap / Touch / All
 	AfkIntervalSec = 3,
 
 	-- Auto = touch on phone, keyboard on pc
@@ -435,10 +435,31 @@ end
 local alive = true
 local afkFlip = false
 
+-- phone: tiny swipe with its own finger id (lane taps use 1-4) at the top edge,
+-- center, where roblox's topbar is empty, so it can't hit a lane or a button
+local function pokeTouch()
+	local cam = workspace.CurrentCamera
+	local vs = cam and cam.ViewportSize or Vector2.new(800, 400)
+	local x, y = vs.X / 2, 2
+
+	VirtualInputManager:SendTouchEvent(9, 0, x, y)
+	task.wait(0.02)
+	VirtualInputManager:SendTouchEvent(9, 1, x + 1, y)
+	task.wait(0.02)
+	VirtualInputManager:SendTouchEvent(9, 2, x + 1, y)
+end
+
 local function pokeActivity()
 	local mode = Config.AfkActivity
+	if mode == "Auto" then
+		mode = isTouchMode() and "Touch" or "Mouse move"
+	end
 
-	if mode == "Mouse move" or mode == "Both" then
+	if mode == "Touch" or mode == "All" then
+		pokeTouch()
+	end
+
+	if mode == "Mouse move" or mode == "All" then
 		local cam = workspace.CurrentCamera
 		local c = cam and cam.ViewportSize / 2 or Vector2.new(300, 300)
 		afkFlip = not afkFlip
@@ -446,7 +467,7 @@ local function pokeActivity()
 		VirtualInputManager:SendMouseMoveEvent(c.X + (afkFlip and 1 or -1), c.Y, game)
 	end
 
-	if mode == "Key tap" or mode == "Both" then
+	if mode == "Key tap" or mode == "All" then
 		-- LeftShift, not a lane key and not Space (Space is used by the game)
 		VirtualInputManager:SendKeyEvent(true, Enum.KeyCode.LeftShift, false, game)
 		task.wait(0.03)
@@ -497,7 +518,7 @@ end
 local Window = Rayfield:CreateWindow({
 	Name = "AutoPlayer",
 	LoadingTitle = "AutoPlayer",
-	LoadingSubtitle = "by xyzisgod",
+	LoadingSubtitle = "by YOUR_HANDLE",
 	ConfigurationSaving = {
 		Enabled = true,
 		FolderName = "RhythmAutoplayer",
@@ -604,8 +625,8 @@ MainTab:CreateToggle({
 
 MainTab:CreateDropdown({
 	Name = "AFK activity",
-	Options = { "Mouse move", "Key tap", "Both" },
-	CurrentOption = { "Mouse move" },
+	Options = { "Auto", "Mouse move", "Key tap", "Touch", "All" },
+	CurrentOption = { "Auto" },
 	MultipleOptions = false,
 	Flag = "AfkActivity",
 	Callback = function(opt)
