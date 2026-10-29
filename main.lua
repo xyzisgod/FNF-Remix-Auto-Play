@@ -1,5 +1,5 @@
 -- Rhythm Battle autoplayer (Rayfield UI)
--- by YOUR_HANDLE
+-- by xyzisgod
 
 local RunService = game:GetService("RunService")
 local VirtualInputManager = game:GetService("VirtualInputManager")
@@ -518,7 +518,7 @@ end
 local Window = Rayfield:CreateWindow({
 	Name = "AutoPlayer",
 	LoadingTitle = "AutoPlayer",
-	LoadingSubtitle = "by YOUR_HANDLE",
+	LoadingSubtitle = "by xyzisgod",
 	ConfigurationSaving = {
 		Enabled = true,
 		FolderName = "RhythmAutoplayer",
