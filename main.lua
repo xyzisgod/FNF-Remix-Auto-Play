@@ -1,5 +1,5 @@
 -- Rhythm Battle autoplayer (Rayfield UI)
--- Made with love 💖
+-- by YOUR_HANDLE
 
 local RunService = game:GetService("RunService")
 local VirtualInputManager = game:GetService("VirtualInputManager")
@@ -7,6 +7,7 @@ local Players = game:GetService("Players")
 local UserInputService = game:GetService("UserInputService")
 local GuiService = game:GetService("GuiService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local VirtualUser = game:GetService("VirtualUser")
 
 local Rayfield = loadstring(game:HttpGet("https://sirius.menu/rayfield"))()
 
@@ -28,6 +29,12 @@ local Config = {
 	RemoteFx = true,
 	-- your character plays the lane hit pose on remote hits
 	RemotePose = true,
+
+	-- remote mode sends no real input, so input-based AFK checks may fire.
+	-- poke fake activity every few seconds while autoplay runs in remote mode
+	AntiAfk = true,
+	AfkActivity = "Mouse move", -- Mouse move / Key tap / Both
+	AfkIntervalSec = 3,
 
 	-- Auto = touch on phone, keyboard on pc
 	InputMode = "Auto",
@@ -423,12 +430,74 @@ local function releaseAll()
 	end
 end
 
+-- anti afk
+
+local alive = true
+local afkFlip = false
+
+local function pokeActivity()
+	local mode = Config.AfkActivity
+
+	if mode == "Mouse move" or mode == "Both" then
+		local cam = workspace.CurrentCamera
+		local c = cam and cam.ViewportSize / 2 or Vector2.new(300, 300)
+		afkFlip = not afkFlip
+		-- 1px wiggle, back and forth
+		VirtualInputManager:SendMouseMoveEvent(c.X + (afkFlip and 1 or -1), c.Y, game)
+	end
+
+	if mode == "Key tap" or mode == "Both" then
+		-- LeftShift, not a lane key and not Space (Space is used by the game)
+		VirtualInputManager:SendKeyEvent(true, Enum.KeyCode.LeftShift, false, game)
+		task.wait(0.03)
+		VirtualInputManager:SendKeyEvent(false, Enum.KeyCode.LeftShift, false, game)
+	end
+end
+
+-- diagnostic: the dump has no AFK code, so list anything named or tagged "afk"
+local function scanAfk()
+	local found = {}
+
+	local function check(inst)
+		if string.find(string.lower(inst.Name), "afk", 1, true) then
+			table.insert(found, inst:GetFullName() .. " [" .. inst.ClassName .. "]")
+		end
+		for k, v in pairs(inst:GetAttributes()) do
+			if string.find(string.lower(k), "afk", 1, true) then
+				table.insert(found, inst:GetFullName() .. " attr " .. k .. " = " .. tostring(v))
+			end
+		end
+	end
+
+	local roots = { player, player.Character, player:FindFirstChild("PlayerGui"), ReplicatedStorage }
+	for _, root in ipairs(roots) do
+		if root then
+			check(root)
+			for _, d in ipairs(root:GetDescendants()) do
+				check(d)
+			end
+		end
+	end
+
+	for _, line in ipairs(found) do
+		warn("[AutoPlayer AFK scan] " .. line)
+	end
+
+	Rayfield:Notify({
+		Title = "AFK scan",
+		Content = #found > 0
+			and (#found .. " match(es), listed in the console (F9)")
+			or "Nothing named afk found in your character, gui or ReplicatedStorage.",
+		Duration = 6,
+	})
+end
+
 -- UI
 
 local Window = Rayfield:CreateWindow({
 	Name = "AutoPlayer",
 	LoadingTitle = "AutoPlayer",
-	LoadingSubtitle = "Open-source!",
+	LoadingSubtitle = "by YOUR_HANDLE",
 	ConfigurationSaving = {
 		Enabled = true,
 		FolderName = "RhythmAutoplayer",
@@ -524,6 +593,43 @@ MainTab:CreateToggle({
 	end,
 })
 
+MainTab:CreateToggle({
+	Name = "Anti AFK (remote mode)",
+	CurrentValue = true,
+	Flag = "AntiAfk",
+	Callback = function(value)
+		Config.AntiAfk = value
+	end,
+})
+
+MainTab:CreateDropdown({
+	Name = "AFK activity",
+	Options = { "Mouse move", "Key tap", "Both" },
+	CurrentOption = { "Mouse move" },
+	MultipleOptions = false,
+	Flag = "AfkActivity",
+	Callback = function(opt)
+		Config.AfkActivity = firstOption(opt)
+	end,
+})
+
+MainTab:CreateSlider({
+	Name = "AFK activity interval",
+	Range = { 1, 30 },
+	Increment = 1,
+	Suffix = "s",
+	CurrentValue = 3,
+	Flag = "AfkIntervalSec",
+	Callback = function(v)
+		Config.AfkIntervalSec = v
+	end,
+})
+
+MainTab:CreateButton({
+	Name = "Scan for AFK indicator",
+	Callback = scanAfk,
+})
+
 MainTab:CreateDropdown({
 	Name = "Input mode",
 	Options = { "Auto", "Keyboard", "Touch" },
@@ -581,6 +687,7 @@ MainTab:CreateButton({
 	Name = "Unload",
 	Callback = function()
 		enabled = false
+		alive = false
 		releaseAll()
 		if mainConn then
 			mainConn:Disconnect()
@@ -787,6 +894,26 @@ mainConn = RunService.Heartbeat:Connect(function(dt)
 					pressNote(lane, note, notes, receptor, speed)
 				end
 			end
+		end
+	end
+end)
+
+-- roblox's own 20 min idle kick
+player.Idled:Connect(function()
+	if not alive then
+		return
+	end
+	pcall(function()
+		VirtualUser:CaptureController()
+		VirtualUser:ClickButton2(Vector2.new())
+	end)
+end)
+
+task.spawn(function()
+	while alive do
+		task.wait(Config.AfkIntervalSec)
+		if alive and enabled and Config.AntiAfk and Config.HitMethod == "Remote" then
+			pcall(pokeActivity)
 		end
 	end
 end)
